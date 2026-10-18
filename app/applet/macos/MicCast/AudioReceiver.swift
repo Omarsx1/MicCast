@@ -11,6 +11,8 @@ public class AudioReceiver: ObservableObject {
     private var udpListener: NWListener?
     private var tcpUsbListener: NWListener?
     private var lastSequence: UInt16?
+    private var totalPackets: UInt64 = 0
+    private var warnedSessionMismatch = false
 
     public init() {}
 
@@ -121,7 +123,20 @@ public class AudioReceiver: ObservableObject {
 
         // Verify session ID matches active control session
         let activeSession = ControlServer.shared.currentSessionId
-        guard sessionId == activeSession else { return }
+        guard sessionId == activeSession else {
+            if !warnedSessionMismatch {
+                warnedSessionMismatch = true
+                print("[AUDIO RECEIVER] ⚠️ Dropping audio: packet session \(sessionId) != active session \(activeSession)")
+            }
+            return
+        }
+
+        totalPackets += 1
+        if totalPackets == 1 {
+            print("[AUDIO RECEIVER] First accepted packet: \(packet.count) bytes, payload \(payloadLen), session \(sessionId)")
+        } else if totalPackets % 200 == 0 {
+            print("[AUDIO RECEIVER] accepted=\(packetsReceived + 1) total=\(totalPackets) lastPayload=\(payloadLen)")
+        }
 
         // Modular sequence rollover check
         if let last = lastSequence {

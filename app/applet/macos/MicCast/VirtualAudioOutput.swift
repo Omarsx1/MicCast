@@ -14,6 +14,7 @@ public class VirtualAudioOutput: ObservableObject {
     private var engine = AVAudioEngine()
     private var sourceNode: AVAudioSourceNode?
     private var deviceListener: AudioObjectPropertyListenerBlock?
+    private var didLogFirstRender = false
 
     // Audio Ring Buffer (elastic buffer for jitter compensation)
     private let ringBufferSize: Int = 48000 * 2 // 1 second buffer
@@ -108,15 +109,12 @@ public class VirtualAudioOutput: ObservableObject {
 
         guard changed, isRunning else { return }
 
+        // The graph is bound to the previous hardware format, so it must be rebuilt
+        // rather than re-pointed at a different device.
         engine.stop()
-        setDevice(id: device.id)
-        do {
-            try engine.start()
-            print("[AUDIO OUTPUT] Re-routed to \(device.name)")
-        } catch {
-            isRunning = false
-            print("[AUDIO OUTPUT] Re-route failed: \(error.localizedDescription)")
-        }
+        isRunning = false
+        didLogFirstRender = false
+        startEngine()
     }
 
     /// Keeps the output in sync when CoreAudio adds or removes devices
@@ -180,13 +178,33 @@ public class VirtualAudioOutput: ObservableObject {
             selectedDevice = list.first(where: { $0.isBlackHole }) ?? list.first
         }
 
+        startEngine()
+    }
+
+    /// Builds the graph with the output device already selected.
+    ///
+    /// AVAudioEngine binds the output node's hardware format during `connect()`.
+    /// Selecting the device afterwards leaves the engine attached to the previous
+    /// hardware: `start()` succeeds but the source node is never asked to render,
+    /// so the virtual device receives pure silence.
+    private func startEngine() {
         engine = AVAudioEngine()
+
+        if let device = selectedDevice {
+            setDevice(id: device.id)
+        }
+
         let outputFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 1, interleaved: false)!
 
         let node = AVAudioSourceNode { _, _, frameCount, audioBufferList -> OSStatus in
             let ablPointer = UnsafeMutableAudioBufferListPointer(audioBufferList)
             guard let buffer = ablPointer[0].mData?.assumingMemoryBound(to: Float.self) else {
                 return noErr
+            }
+
+            if !self.didLogFirstRender {
+                self.didLogFirstRender = true
+                print("[AUDIO OUTPUT] Source node is rendering into BlackHole")
             }
 
             self.bufferLock.lock()
@@ -215,16 +233,12 @@ public class VirtualAudioOutput: ObservableObject {
         engine.attach(node)
         engine.connect(node, to: engine.mainMixerNode, format: outputFormat)
 
-        // Set device if selected
-        if let dev = selectedDevice {
-            setDevice(id: dev.id)
-        }
-
         do {
             try engine.start()
             isRunning = true
             print("[AUDIO OUTPUT] AudioEngine started at 48kHz toward \(selectedDevice?.name ?? "Default")")
         } catch {
+            isRunning = false
             print("[AUDIO OUTPUT] Engine start failed: \(error.localizedDescription)")
         }
     }
