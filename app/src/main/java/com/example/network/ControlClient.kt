@@ -13,12 +13,17 @@ import java.nio.ByteOrder
 
 /**
  * TCP Control Client for authentication handshake and session negotiation.
- * Handshake flow:
+ * Handshake flow (v0x03):
  * 1. Connect to TCP Port 51516
  * 2. Mac sends: 16-byte random nonce
- * 3. Client responds: Magic 'M','C','S','C' (4B) + Version 0x02 (1B) + HMAC-SHA256(PIN, nonce) (32B)
- * 4. Mac responds: Status 0x00 (1B) + Session ID uint32 (4B)
+ * 3. Client sends: 'MCSC'(4) + version 0x03(1) + mode(1) + idLen(1) + deviceId
+ *    + nameLen(1) + name + HMAC-SHA256(PIN or token, nonce)(32)
+ * 4. Mac responds: Status 0x00(1) + Session ID uint32(4) + tokenLen(1) + token
+ *    The token is present only when the Mac just paired this device (PIN mode).
+ * Legacy v0x02 clients keep working against the same server.
  */
+enum class AuthMode { PIN, TOKEN }
+
 class ControlClient {
     companion object {
         private const val TAG = "ControlClient"
@@ -40,7 +45,10 @@ class ControlClient {
     suspend fun performHandshake(
         host: String,
         port: Int,
-        pin: String,
+        mode: AuthMode,
+        credential: ByteArray,
+        deviceId: String,
+        deviceName: String,
         timeoutMs: Int = 4000
     ): Result<HandshakeResult> = withContext(Dispatchers.IO) {
         try {
@@ -55,19 +63,18 @@ class ControlClient {
             val nonce = ByteArray(16)
             input.readFully(nonce)
 
-            // 2. Compute HMAC-SHA256(PIN, nonce)
-            val hmac = AudioProtocol.computeHmacSha256(pin.trim(), nonce)
-
-            // 3. Send response header + HMAC
-            output.writeByte(MAGIC_CONTROL_0.toInt())
-            output.writeByte(MAGIC_CONTROL_1.toInt())
-            output.writeByte(MAGIC_CONTROL_2.toInt())
-            output.writeByte(MAGIC_CONTROL_3.toInt())
-            output.writeByte(AudioProtocol.PROTOCOL_VERSION.toInt())
-            output.write(hmac)
+            // 2. Build and send the v0x03 handshake frame
+            val frame = AudioProtocol.buildHandshakeFrame(
+                mode = if (mode == AuthMode.PIN) AudioProtocol.AUTH_MODE_PIN else AudioProtocol.AUTH_MODE_TOKEN,
+                deviceId = deviceId,
+                deviceName = deviceName,
+                credential = credential,
+                nonce = nonce
+            )
+            output.write(frame)
             output.flush()
 
-            // 4. Read server status response
+            // 3. Read server status response
             val status = input.readByte()
             when (status) {
                 STATUS_OK -> {
@@ -75,16 +82,30 @@ class ControlClient {
                     input.readFully(sessionIdBytes)
                     val sessionId = ByteBuffer.wrap(sessionIdBytes).order(ByteOrder.BIG_ENDIAN).int.toLong() and 0xFFFFFFFFL
 
+                    val tokenLength = input.readByte().toInt() and 0xFF
+                    val issuedToken = if (tokenLength > 0) {
+                        val tokenBytes = ByteArray(tokenLength)
+                        input.readFully(tokenBytes)
+                        tokenBytes
+                    } else {
+                        null
+                    }
+
                     socket = sock
                     dataInput = input
                     dataOutput = output
 
-                    Log.i(TAG, "Handshake successful! Assigned Session ID: $sessionId")
-                    Result.success(HandshakeResult(sessionId, sock))
+                    Log.i(TAG, "Handshake successful (${mode.name})! Session ID: $sessionId, new token: ${issuedToken != null}")
+                    Result.success(HandshakeResult(sessionId, sock, issuedToken))
                 }
                 STATUS_AUTH_FAILED -> {
                     sock.close()
-                    Result.failure(SecurityException("PIN incorrecto. Verifica el código mostrado en tu Mac."))
+                    val message = if (mode == AuthMode.TOKEN) {
+                        "Emparejamiento expirado. Ingresa el PIN de nuevo."
+                    } else {
+                        "PIN incorrecto. Verifica el código mostrado en tu Mac."
+                    }
+                    Result.failure(SecurityException(message))
                 }
                 STATUS_LOCKED_OUT -> {
                     sock.close()
@@ -139,6 +160,7 @@ class ControlClient {
 
     data class HandshakeResult(
         val sessionId: Long,
-        val controlSocket: Socket
+        val controlSocket: Socket,
+        val issuedToken: ByteArray? = null
     )
 }

@@ -127,11 +127,60 @@ object AudioProtocol {
     /**
      * Challenge-Response: computes HMAC-SHA256(PIN, nonce).
      */
-    fun computeHmacSha256(pin: String, nonce: ByteArray): ByteArray {
-        val keySpec = SecretKeySpec(pin.toByteArray(Charsets.UTF_8), "HmacSHA256")
+    fun computeHmacSha256(pin: String, nonce: ByteArray): ByteArray =
+        computeHmacSha256(pin.toByteArray(Charsets.UTF_8), nonce)
+
+    fun computeHmacSha256(key: ByteArray, nonce: ByteArray): ByteArray {
+        val keySpec = SecretKeySpec(key, "HmacSHA256")
         val mac = Mac.getInstance("HmacSHA256")
         mac.init(keySpec)
         return mac.doFinal(nonce)
+    }
+
+    // Control channel: v0x03 adds per-device token authentication.
+    const val CONTROL_VERSION: Byte = 0x03
+    const val AUTH_MODE_PIN: Byte = 0x00
+    const val AUTH_MODE_TOKEN: Byte = 0x01
+    const val MAX_DEVICE_ID_LEN = 64
+    const val MAX_DEVICE_NAME_LEN = 64
+
+    /**
+     * Builds the v0x03 control handshake frame:
+     * 'MCSC' + version + mode + idLen + deviceId + nameLen + name + HMAC(credential, nonce)
+     */
+    fun buildHandshakeFrame(
+        mode: Byte,
+        deviceId: String,
+        deviceName: String,
+        credential: ByteArray,
+        nonce: ByteArray
+    ): ByteArray {
+        val idBytes = deviceId.toByteArray(Charsets.UTF_8)
+        require(idBytes.isNotEmpty() && idBytes.size <= MAX_DEVICE_ID_LEN) {
+            "deviceId must be 1..$MAX_DEVICE_ID_LEN bytes"
+        }
+
+        val nameBytes = deviceName.toByteArray(Charsets.UTF_8)
+            .let { if (it.size > MAX_DEVICE_NAME_LEN) it.copyOf(MAX_DEVICE_NAME_LEN) else it }
+
+        val hmac = computeHmacSha256(credential, nonce)
+
+        val buffer = ByteBuffer.allocate(4 + 3 + idBytes.size + nameBytes.size + hmac.size)
+        buffer.order(ByteOrder.BIG_ENDIAN)
+
+        buffer.put(0x4D) // 'M'
+        buffer.put(0x43) // 'C'
+        buffer.put(0x53) // 'S'
+        buffer.put(0x43) // 'C'
+        buffer.put(CONTROL_VERSION)
+        buffer.put(mode)
+        buffer.put(idBytes.size.toByte())
+        buffer.put(idBytes)
+        buffer.put(nameBytes.size.toByte())
+        buffer.put(nameBytes)
+        buffer.put(hmac)
+
+        return buffer.array()
     }
 
     /**

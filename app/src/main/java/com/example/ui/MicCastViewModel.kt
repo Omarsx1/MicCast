@@ -9,7 +9,9 @@ import com.example.model.AudioConfig
 import com.example.model.ConnectionState
 import com.example.model.DiscoveredDevice
 import com.example.model.TransportType
+import com.example.network.AuthMode
 import com.example.network.DeviceDiscovery
+import com.example.network.PairingStore
 import com.example.protocol.AudioProtocol
 import com.example.service.MicCastService
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -63,6 +65,7 @@ class MicCastViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun onDeviceClicked(device: DiscoveredDevice) {
+        if (connectWithStoredToken(device)) return
         _pendingPinDevice.value = device
     }
 
@@ -98,6 +101,7 @@ class MicCastViewModel(application: Application) : AndroidViewModel(application)
             port = AudioProtocol.DEFAULT_TCP_CONTROL_PORT,
             isUsb = true
         )
+        if (connectWithStoredToken(usbDevice)) return
         _pendingPinDevice.value = usbDevice
     }
 
@@ -105,15 +109,38 @@ class MicCastViewModel(application: Application) : AndroidViewModel(application)
         val device = _pendingPinDevice.value ?: return
         _pendingPinDevice.value = null
 
+        startConnection(device, AuthMode.PIN, pin.trim().toByteArray(Charsets.UTF_8))
+    }
+
+    /**
+     * Reconnects without asking for the PIN when this phone already holds a token
+     * issued by that Mac. Returns false when there is nothing stored.
+     */
+    private fun connectWithStoredToken(device: DiscoveredDevice): Boolean {
+        val token = PairingStore.token(context, device.host) ?: return false
+        startConnection(device, AuthMode.TOKEN, token)
+        return true
+    }
+
+    private fun startConnection(device: DiscoveredDevice, mode: AuthMode, credential: ByteArray) {
         val transport = if (device.isUsb) TransportType.USB_TCP else TransportType.WIFI_UDP
 
         val intent = Intent(context, MicCastService::class.java).apply {
             action = MicCastService.ACTION_START
             putExtra(MicCastService.EXTRA_HOST, device.host)
             putExtra(MicCastService.EXTRA_CONTROL_PORT, device.port)
-            putExtra(MicCastService.EXTRA_AUDIO_PORT, if (device.isUsb) AudioProtocol.DEFAULT_TCP_USB_PORT else AudioProtocol.DEFAULT_UDP_AUDIO_PORT)
-            putExtra(MicCastService.EXTRA_PIN, pin)
+            putExtra(
+                MicCastService.EXTRA_AUDIO_PORT,
+                if (device.isUsb) AudioProtocol.DEFAULT_TCP_USB_PORT else AudioProtocol.DEFAULT_UDP_AUDIO_PORT
+            )
             putExtra(MicCastService.EXTRA_TRANSPORT, transport.name)
+            putExtra(MicCastService.EXTRA_AUTH_MODE, mode.name)
+
+            if (mode == AuthMode.TOKEN) {
+                putExtra(MicCastService.EXTRA_TOKEN, credential)
+            } else {
+                putExtra(MicCastService.EXTRA_PIN, String(credential, Charsets.UTF_8))
+            }
         }
         context.startForegroundService(intent)
     }

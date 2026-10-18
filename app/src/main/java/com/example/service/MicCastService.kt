@@ -23,7 +23,9 @@ import com.example.model.AudioConfig
 import com.example.model.ConnectionState
 import com.example.model.TransportType
 import com.example.network.AudioStreamer
+import com.example.network.AuthMode
 import com.example.network.ControlClient
+import com.example.network.PairingStore
 import com.example.protocol.AudioProtocol
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -53,6 +55,8 @@ class MicCastService : Service() {
         const val EXTRA_AUDIO_PORT = "extra_audio_port"
         const val EXTRA_PIN = "extra_pin"
         const val EXTRA_TRANSPORT = "extra_transport"
+        const val EXTRA_AUTH_MODE = "extra_auth_mode"
+        const val EXTRA_TOKEN = "extra_token"
 
         // Global StateFlow for UI binding
         private val _serviceConnectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
@@ -102,11 +106,20 @@ class MicCastService : Service() {
                 val host = intent.getStringExtra(EXTRA_HOST) ?: "127.0.0.1"
                 val controlPort = intent.getIntExtra(EXTRA_CONTROL_PORT, AudioProtocol.DEFAULT_TCP_CONTROL_PORT)
                 val audioPort = intent.getIntExtra(EXTRA_AUDIO_PORT, AudioProtocol.DEFAULT_UDP_AUDIO_PORT)
-                val pin = intent.getStringExtra(EXTRA_PIN) ?: ""
                 val transportName = intent.getStringExtra(EXTRA_TRANSPORT) ?: TransportType.WIFI_UDP.name
                 val transport = TransportType.valueOf(transportName)
 
-                startStreaming(host, controlPort, audioPort, pin, transport)
+                val authMode = when (intent.getStringExtra(EXTRA_AUTH_MODE)) {
+                    AuthMode.TOKEN.name -> AuthMode.TOKEN
+                    else -> AuthMode.PIN
+                }
+                val credential = if (authMode == AuthMode.TOKEN) {
+                    intent.getByteArrayExtra(EXTRA_TOKEN) ?: ByteArray(0)
+                } else {
+                    (intent.getStringExtra(EXTRA_PIN) ?: "").trim().toByteArray(Charsets.UTF_8)
+                }
+
+                startStreaming(host, controlPort, audioPort, authMode, credential, transport)
             }
             ACTION_STOP -> {
                 stopStreaming()
@@ -203,7 +216,8 @@ class MicCastService : Service() {
         host: String,
         controlPort: Int,
         audioPort: Int,
-        pin: String,
+        authMode: AuthMode,
+        credential: ByteArray,
         transport: TransportType
     ) {
         targetHost = host
@@ -222,17 +236,38 @@ class MicCastService : Service() {
             val client = ControlClient()
             controlClient = client
 
-            _serviceConnectionState.value = ConnectionState.Handshaking(host, "Autenticando PIN...")
-            val handshakeResult = client.performHandshake(host, controlPort, pin)
+            _serviceConnectionState.value = ConnectionState.Handshaking(
+                host,
+                if (authMode == AuthMode.TOKEN) "Reconectando dispositivo..." else "Autenticando PIN..."
+            )
+            val handshakeResult = client.performHandshake(
+                host = host,
+                port = controlPort,
+                mode = authMode,
+                credential = credential,
+                deviceId = PairingStore.deviceId(this@MicCastService),
+                deviceName = PairingStore.deviceName()
+            )
 
             if (handshakeResult.isFailure) {
+                // A rejected token means the Mac revoked this device: drop it so the
+                // next tap asks for the PIN again.
+                if (authMode == AuthMode.TOKEN) {
+                    PairingStore.clearToken(this@MicCastService, host)
+                }
+
                 val errorMsg = handshakeResult.exceptionOrNull()?.message ?: "Error en autenticación"
                 _serviceConnectionState.value = ConnectionState.Error(errorMsg)
                 updateNotification("Error: $errorMsg")
                 return@launch
             }
 
-            val sessionId = handshakeResult.getOrThrow().sessionId
+            val handshake = handshakeResult.getOrThrow()
+            handshake.issuedToken?.let { token ->
+                PairingStore.saveToken(this@MicCastService, host, token)
+            }
+
+            val sessionId = handshake.sessionId
             activeSessionId = sessionId
 
             // Determine target audio port based on transport
