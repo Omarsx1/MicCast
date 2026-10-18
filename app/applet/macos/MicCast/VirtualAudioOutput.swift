@@ -13,6 +13,7 @@ public class VirtualAudioOutput: ObservableObject {
 
     private var engine = AVAudioEngine()
     private var sourceNode: AVAudioSourceNode?
+    private var deviceListener: AudioObjectPropertyListenerBlock?
 
     // Audio Ring Buffer (elastic buffer for jitter compensation)
     private let ringBufferSize: Int = 48000 * 2 // 1 second buffer
@@ -27,9 +28,11 @@ public class VirtualAudioOutput: ObservableObject {
 
     public init() {
         refreshDevices()
+        observeDeviceChanges()
     }
 
-    public func refreshDevices() {
+    /// Pure enumeration: safe to call from any thread.
+    private func loadDevices() -> [AudioDevice] {
         var propertySize: UInt32 = 0
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
@@ -45,7 +48,7 @@ public class VirtualAudioOutput: ObservableObject {
             &propertySize
         )
 
-        guard status == noErr else { return }
+        guard status == noErr else { return [] }
 
         let deviceCount = Int(propertySize) / MemoryLayout<AudioDeviceID>.size
         var deviceIDs = [AudioDeviceID](repeating: 0, count: deviceCount)
@@ -75,15 +78,68 @@ public class VirtualAudioOutput: ObservableObject {
             list.append(AudioDevice(id: id, name: deviceName, isBlackHole: isBH))
         }
 
-        DispatchQueue.main.async {
+        return list
+    }
+
+    public func refreshDevices() {
+        let list = loadDevices()
+
+        let apply = {
             self.availableDevices = list
-            // Prefer BlackHole if present
+
             if let bh = list.first(where: { $0.isBlackHole }) {
-                self.selectedDevice = bh
+                self.selectDevice(bh)
             } else if self.selectedDevice == nil {
                 self.selectedDevice = list.first
             }
         }
+
+        if Thread.isMainThread {
+            apply()
+        } else {
+            DispatchQueue.main.async(execute: apply)
+        }
+    }
+
+    /// Re-routes the engine when the target device changes, including while running.
+    public func selectDevice(_ device: AudioDevice) {
+        let changed = self.selectedDevice?.id != device.id
+        self.selectedDevice = device
+
+        guard changed, isRunning else { return }
+
+        engine.stop()
+        setDevice(id: device.id)
+        do {
+            try engine.start()
+            print("[AUDIO OUTPUT] Re-routed to \(device.name)")
+        } catch {
+            isRunning = false
+            print("[AUDIO OUTPUT] Re-route failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Keeps the output in sync when CoreAudio adds or removes devices
+    /// (e.g. BlackHole finishing its load after launch).
+    private func observeDeviceChanges() {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            self?.refreshDevices()
+        }
+
+        AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            DispatchQueue.main,
+            block
+        )
+
+        self.deviceListener = block
     }
 
     public func pushAudioSamples(_ pcmBytes: Data) {
@@ -114,6 +170,15 @@ public class VirtualAudioOutput: ObservableObject {
 
     public func start() {
         guard !isRunning else { return }
+
+        // Resolve the target synchronously. Depending on the async refresh means
+        // the very first start would configure no device and silently fall back
+        // to the system default output instead of BlackHole.
+        if selectedDevice == nil {
+            let list = loadDevices()
+            availableDevices = list
+            selectedDevice = list.first(where: { $0.isBlackHole }) ?? list.first
+        }
 
         engine = AVAudioEngine()
         let outputFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 1, interleaved: false)!
@@ -166,29 +231,38 @@ public class VirtualAudioOutput: ObservableObject {
 
     public func setDevice(id: AudioDeviceID) {
         var deviceID = id
-        let outputNode = engine.outputNode
-        let audioUnit = outputNode.audioUnit
+        guard let au = engine.outputNode.audioUnit else {
+            print("[AUDIO OUTPUT] Output audio unit unavailable; cannot select device")
+            return
+        }
 
-        if let au = audioUnit {
-            AudioUnitSetProperty(
-                au,
-                kAudioOutputUnitProperty_CurrentDevice,
-                kAudioUnitScope_Global,
-                0,
-                &deviceID,
-                UInt32(MemoryLayout<AudioDeviceID>.size)
-            )
+        let deviceStatus = AudioUnitSetProperty(
+            au,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &deviceID,
+            UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
 
-            // Request 64 frames for ultra-low latency (~1.33 ms)
-            var bufferFrameSize: UInt32 = 64
-            AudioUnitSetProperty(
-                au,
-                kAudioDevicePropertyBufferFrameSize,
-                kAudioUnitScope_Global,
-                0,
-                &bufferFrameSize,
-                UInt32(MemoryLayout<UInt32>.size)
-            )
+        guard deviceStatus == noErr else {
+            print("[AUDIO OUTPUT] Could not set output device (status \(deviceStatus)); using system default")
+            return
+        }
+
+        // Request 64 frames for ultra-low latency (~1.33 ms)
+        var bufferFrameSize: UInt32 = 64
+        let bufferStatus = AudioUnitSetProperty(
+            au,
+            kAudioDevicePropertyBufferFrameSize,
+            kAudioUnitScope_Global,
+            0,
+            &bufferFrameSize,
+            UInt32(MemoryLayout<UInt32>.size)
+        )
+
+        if bufferStatus != noErr {
+            print("[AUDIO OUTPUT] Could not set buffer size (status \(bufferStatus))")
         }
     }
 
