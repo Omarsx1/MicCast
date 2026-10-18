@@ -33,3 +33,8 @@ __pycache__/
 
 # AI Studio agent artifacts
 .aistudio/
+
+# Release packaging output
+dist/
+.build-release-arm64/
+.build-release-x86_64/
