@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">MicCast</string>
+    <string name="channel_name">Transmisión de Micrófono MicCast</string>
+    <string name="channel_description">Mantiene la captura y transmisión de audio activa en segundo plano con la pantalla apagada.</string>
+    <string name="notification_title">MicCast activo</string>
+    <string name="notification_text">Transmitiendo audio a la Mac</string>
+    <string name="action_mute">Silenciar</string>
+    <string name="action_unmute">Reanudar</string>
+    <string name="action_stop">Detener</string>
+</resources>

@@ -1,0 +1,35 @@
+*.iml
+.gradle
+.kotlin
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+.env
+debug.keystore
+
+# Swift Package Manager / macOS build output
+.build/
+.swiftpm/
+*.app/
+DerivedData/
+
+# Gradle / Kotlin build output
+build/
+.kotlin/
+
+# Python
+__pycache__/
+*.pyc
+
+# AI Studio agent artifacts
+.aistudio/

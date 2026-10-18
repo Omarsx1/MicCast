@@ -1,0 +1,6 @@
+{
+  "name": "MicCast",
+  "description": "Micrófono inalámbrico (Wi-Fi) y por cable (USB) de ultrabaja latencia para macOS.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

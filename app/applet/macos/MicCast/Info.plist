@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.aistudio.miccast.mac</string>
+    <key>CFBundleName</key>
+    <string>MicCast</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>MicCast necesita acceso a tu red local para descubrir y conectarse con tu teléfono Android mediante mDNS.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_miccast._tcp</string>
+        <string>_miccast._udp</string>
+    </array>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>MicCast necesita acceso al sistema de audio para entregar el flujo de micrófono a BlackHole.</string>
+</dict>
+</plist>
