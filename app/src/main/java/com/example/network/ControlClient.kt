@@ -55,6 +55,9 @@ class ControlClient {
             val sock = Socket()
             sock.soTimeout = timeoutMs
             sock.connect(InetSocketAddress(host, port), timeoutMs)
+            // Track the socket before authenticating so any failure closes it
+            // instead of leaving a half-open connection on the Mac.
+            socket = sock
 
             val input = DataInputStream(sock.getInputStream())
             val output = DataOutputStream(sock.getOutputStream())

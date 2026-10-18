@@ -110,6 +110,16 @@ public class ControlServer: ObservableObject {
             }
         }
         connection.start(queue: .main)
+
+        // A client that connects and never sends a valid hello must not hold the
+        // connection open forever; seen in practice with a broken handshake frame.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self, weak connection] in
+            guard let self, let connection else { return }
+            if self.activeConnection !== connection {
+                print("[CONTROL SERVER] Handshake timed out; closing connection")
+                connection.cancel()
+            }
+        }
     }
 
     private func startHandshake(on connection: NWConnection) {

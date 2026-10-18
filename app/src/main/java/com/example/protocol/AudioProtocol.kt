@@ -165,7 +165,8 @@ object AudioProtocol {
 
         val hmac = computeHmacSha256(credential, nonce)
 
-        val buffer = ByteBuffer.allocate(4 + 3 + idBytes.size + nameBytes.size + hmac.size)
+        // 'MCSC'(4) + version(1) + mode(1) + idLen(1) + id + nameLen(1) + name + hmac
+        val buffer = ByteBuffer.allocate(4 + 3 + 1 + idBytes.size + nameBytes.size + hmac.size)
         buffer.order(ByteOrder.BIG_ENDIAN)
 
         buffer.put(0x4D) // 'M'

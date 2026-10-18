@@ -70,4 +70,44 @@ class AudioProtocolTest {
         val wrongHmac = AudioProtocol.computeHmacSha256("000000", nonce)
         assertFalse(hmac1.contentEquals(wrongHmac))
     }
+
+    @Test
+    fun handshakeFrameHasExactLayoutAndLength() {
+        val nonce = ByteArray(16) { it.toByte() }
+        val deviceId = "device-1234"
+        val deviceName = "Pixel 8"
+        val credential = "123456".toByteArray(Charsets.UTF_8)
+
+        val frame = AudioProtocol.buildHandshakeFrame(
+            mode = AudioProtocol.AUTH_MODE_PIN,
+            deviceId = deviceId,
+            deviceName = deviceName,
+            credential = credential,
+            nonce = nonce
+        )
+
+        // 4 magic + 3 fixed + 1 idLen + id + 1 nameLen + name + 32 hmac
+        val expectedLength = 4 + 3 + 1 + deviceId.length + 1 + deviceName.length + 32
+        assertEquals(expectedLength, frame.size)
+
+        assertEquals(0x4D.toByte(), frame[0]) // 'M'
+        assertEquals(0x43.toByte(), frame[1]) // 'C'
+        assertEquals(0x53.toByte(), frame[2]) // 'S'
+        assertEquals(0x43.toByte(), frame[3]) // 'C'
+        assertEquals(AudioProtocol.CONTROL_VERSION, frame[4])
+        assertEquals(AudioProtocol.AUTH_MODE_PIN, frame[5])
+        assertEquals(deviceId.length.toByte(), frame[6])
+
+        val idStart = 7
+        assertEquals(deviceId, String(frame, idStart, deviceId.length, Charsets.UTF_8))
+
+        val nameLenIndex = idStart + deviceId.length
+        assertEquals(deviceName.length.toByte(), frame[nameLenIndex])
+
+        val nameStart = nameLenIndex + 1
+        assertEquals(deviceName, String(frame, nameStart, deviceName.length, Charsets.UTF_8))
+
+        val expectedHmac = AudioProtocol.computeHmacSha256(credential, nonce)
+        assertArrayEquals(expectedHmac, frame.copyOfRange(nameStart + deviceName.length, frame.size))
+    }
 }
