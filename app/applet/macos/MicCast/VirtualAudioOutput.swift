@@ -17,9 +17,12 @@ public class VirtualAudioOutput: ObservableObject {
     private var didLogFirstRender = false
 
     // Audio Ring Buffer (elastic buffer for jitter compensation)
-    private let ringBufferSize: Int = 48000 * 2 // 1 second buffer
+    // Kept deliberately small: latency equals occupancy, and the phone clock and
+    // BlackHole clock drift apart, so an unbounded buffer grows forever.
+    private let targetBufferSamples: Int = 48000 * 40 / 1000 // 40 ms
     private var ringBuffer: [Int16] = []
     private let bufferLock = NSLock()
+    private var lastBufferLog = Date.distantPast
 
     public struct AudioDevice: Identifiable, Hashable {
         public let id: AudioDeviceID
@@ -160,8 +163,15 @@ public class VirtualAudioOutput: ObservableObject {
 
         bufferLock.lock()
         ringBuffer.append(contentsOf: samples)
-        if ringBuffer.count > ringBufferSize {
-            ringBuffer.removeFirst(ringBuffer.count - ringBufferSize)
+        if ringBuffer.count > targetBufferSamples {
+            // Drop the oldest audio: bounds end-to-end latency instead of letting
+            // clock drift accumulate it.
+            ringBuffer.removeFirst(ringBuffer.count - targetBufferSamples)
+        }
+        let now = Date()
+        if now.timeIntervalSince(lastBufferLog) > 2 {
+            lastBufferLog = now
+            print(String(format: "[AUDIO BUFFER] %.1f ms buffered (target 40 ms)", Double(ringBuffer.count) / 48.0))
         }
         bufferLock.unlock()
     }
@@ -277,6 +287,19 @@ public class VirtualAudioOutput: ObservableObject {
 
         if bufferStatus != noErr {
             print("[AUDIO OUTPUT] Could not set buffer size (status \(bufferStatus))")
+        }
+
+        var actualFrames: UInt32 = 0
+        var actualSize = UInt32(MemoryLayout<UInt32>.size)
+        if AudioUnitGetProperty(
+            au,
+            kAudioDevicePropertyBufferFrameSize,
+            kAudioUnitScope_Global,
+            0,
+            &actualFrames,
+            &actualSize
+        ) == noErr {
+            print(String(format: "[AUDIO OUTPUT] Hardware buffer: %u frames (%.2f ms)", actualFrames, Double(actualFrames) / 48.0))
         }
     }
 
